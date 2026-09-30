@@ -5,18 +5,30 @@ import re
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 
-from .config_flow import CONF_SLAVE_ID
+from .config_flow import CONF_SINGLE_WRITE_FC16, CONF_SLAVE_ID
 from .const import DOMAIN, PLATFORMS
 from .coordinator import AlphaESSCoordinator
 from .modbus_client import AlphaESSModbusClient
 
 SERVICE_WRITE_REGISTER = "write_register"
+SERVICE_WRITE_REGISTERS = "write_registers"
+_ADDR = vol.All(vol.Coerce(int), vol.Range(min=0, max=65535))
+_WORD = vol.All(vol.Coerce(int), vol.Range(min=0, max=65535))
 SERVICE_WRITE_REGISTER_SCHEMA = vol.Schema({
-    vol.Required("address"): vol.All(vol.Coerce(int), vol.Range(min=0, max=65535)),
-    vol.Required("value"): vol.All(vol.Coerce(int), vol.Range(min=0, max=65535)),
+    vol.Required("address"): _ADDR,
+    vol.Required("value"): _WORD,
+    # Omitted = follow the config-entry "single_write_fc16" option.
+    vol.Optional("use_fc16"): bool,
+    vol.Optional("verify", default=False): bool,
+})
+SERVICE_WRITE_REGISTERS_SCHEMA = vol.Schema({
+    vol.Required("address"): _ADDR,
+    vol.Required("values"): vol.All([_WORD], vol.Length(min=1, max=123)),
+    vol.Optional("verify", default=False): bool,
 })
 
 _MODEL_PREFIXES: dict[str, str] = {
@@ -52,6 +64,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         host=host,
         port=port,
         slave_id=entry.data[CONF_SLAVE_ID],
+        single_write_fc16=entry.options.get(CONF_SINGLE_WRITE_FC16, False),
     )
     try:
         await client.connect()
@@ -70,20 +83,58 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     if not hass.services.has_service(DOMAIN, SERVICE_WRITE_REGISTER):
-        async def _handle_write_register(call: ServiceCall) -> None:
+        def _coordinators() -> list[AlphaESSCoordinator]:
+            # hass.data[DOMAIN] also holds non-coordinator entries (e.g. the
+            # per-entry switches map), so only return coordinators.
+            return [
+                o for o in hass.data[DOMAIN].values()
+                if isinstance(o, AlphaESSCoordinator)
+            ]
+
+        async def _handle_write_register(call: ServiceCall) -> ServiceResponse:
             address: int = call.data["address"]
             value: int = call.data["value"]
-            # hass.data[DOMAIN] also holds non-coordinator entries (e.g. the
-            # per-entry switches map), so only call coordinators.
-            for obj in hass.data[DOMAIN].values():
-                if isinstance(obj, AlphaESSCoordinator):
-                    await obj.async_write_raw(address, value)
+            verify: bool = call.data["verify"]
+            readbacks = []
+            for obj in _coordinators():
+                rb = await obj.async_write_raw(
+                    address, value, use_fc16=call.data.get("use_fc16"), verify=verify
+                )
+                if verify and rb != value:
+                    raise HomeAssistantError(
+                        f"Register {address:#06x}: wrote {value}, read back {rb}"
+                    )
+                readbacks.append(rb)
+            return {"address": address, "readback": readbacks}
+
+        async def _handle_write_registers(call: ServiceCall) -> ServiceResponse:
+            address: int = call.data["address"]
+            values: list[int] = call.data["values"]
+            verify: bool = call.data["verify"]
+            readbacks = []
+            for obj in _coordinators():
+                rb = await obj.async_write_registers(address, values, verify=verify)
+                if verify and rb != values:
+                    raise HomeAssistantError(
+                        f"Registers {address:#06x}+{len(values)}: wrote {values}, "
+                        f"read back {rb}"
+                    )
+                readbacks.append(rb)
+            return {"address": address, "readback": readbacks}
 
         hass.services.async_register(
             DOMAIN,
             SERVICE_WRITE_REGISTER,
             _handle_write_register,
             schema=SERVICE_WRITE_REGISTER_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_WRITE_REGISTERS,
+            _handle_write_registers,
+            schema=SERVICE_WRITE_REGISTERS_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
         )
 
     device_registry = dr.async_get(hass)
@@ -113,4 +164,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.client.close()
         if not any(isinstance(o, AlphaESSCoordinator) for o in hass.data[DOMAIN].values()):
             hass.services.async_remove(DOMAIN, SERVICE_WRITE_REGISTER)
+            hass.services.async_remove(DOMAIN, SERVICE_WRITE_REGISTERS)
     return unloaded

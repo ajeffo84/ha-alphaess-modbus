@@ -27,8 +27,13 @@ _COMM_ERRORS = (ModbusException, asyncio.TimeoutError, OSError)
 
 
 class AlphaESSModbusClient:
-    def __init__(self, host: str, port: int, slave_id: int) -> None:
+    def __init__(
+        self, host: str, port: int, slave_id: int, single_write_fc16: bool = False
+    ) -> None:
         self._host = host
+        # Some inverters/bridges ignore FC6 (Write Single Register) but accept
+        # FC16 (Write Multiple Registers) with quantity 1. Opt-in per config entry.
+        self.single_write_fc16 = single_write_fc16
         self._port = port
         self._slave_id = slave_id
         self._client: AsyncModbusTcpClient | None = None
@@ -182,22 +187,62 @@ class AlphaESSModbusClient:
 
         return value
 
-    async def write_registers(self, address: int, values: list[int]) -> None:
+    async def write_registers(
+        self, address: int, values: list[int], *, verify: bool = False
+    ) -> list[int] | None:
+        """FC16 write. With verify=True, read the span back under the same lock.
+
+        Returns the read-back registers when verify=True, else None. A mismatch is
+        not raised here; callers decide whether it is an error.
+        """
         async with self._lock:
             await self._ensure_connected()
             await self._request(
                 lambda: self._client.write_registers(
                     address, values, **{_SLAVE_KWARG: self._slave_id}
                 ),
-                f"writing {address:#06x}",
+                f"writing {address:#06x}+{len(values)} (FC16)",
             )
+            if not verify:
+                return None
+            result = await self._request(
+                lambda: self._client.read_holding_registers(
+                    address, count=len(values), **{_SLAVE_KWARG: self._slave_id}
+                ),
+                f"verifying {address:#06x}+{len(values)}",
+            )
+            return list(result.registers)
 
-    async def write_register(self, address: int, value: int) -> None:
+    async def write_register(
+        self,
+        address: int,
+        value: int,
+        *,
+        use_fc16: bool | None = None,
+        verify: bool = False,
+    ) -> int | None:
+        """Write one register via FC6, or FC16 qty 1 when enabled.
+
+        use_fc16=None follows the config-entry option. Returns the read-back
+        value when verify=True, else None.
+        """
+        if self.single_write_fc16 if use_fc16 is None else use_fc16:
+            regs = await self.write_registers(address, [value], verify=verify)
+            return regs[0] if regs else None
         async with self._lock:
             await self._ensure_connected()
             await self._request(
                 lambda: self._client.write_register(
                     address, value, **{_SLAVE_KWARG: self._slave_id}
                 ),
-                f"writing {address:#06x}",
+                f"writing {address:#06x} (FC6)",
             )
+            if not verify:
+                return None
+            result = await self._request(
+                lambda: self._client.read_holding_registers(
+                    address, count=1, **{_SLAVE_KWARG: self._slave_id}
+                ),
+                f"verifying {address:#06x}",
+            )
+            return result.registers[0]

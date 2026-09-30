@@ -17,6 +17,7 @@ from .modbus_client import AlphaESSModbusClient
 _LOGGER = logging.getLogger(__name__)
 
 CONF_SLAVE_ID = "slave_id"
+CONF_SINGLE_WRITE_FC16 = "single_write_fc16"
 
 STEP_SCHEMA = vol.Schema({
     vol.Required(CONF_HOST): str,
@@ -85,6 +86,7 @@ class AlphaESSOptionsFlowHandler(config_entries.OptionsFlow):
         slow_multiplier = options.get("slow_multiplier", 3.0)
         fast_multiplier = options.get("fast_multiplier", 0.5)
         model_variant = options.get("model_variant", "standard")
+        single_write_fc16 = options.get(CONF_SINGLE_WRITE_FC16, False)
 
         schema = vol.Schema({
             vol.Required("poll_mode", default=poll_mode): selector.SelectSelector(
@@ -118,6 +120,9 @@ class AlphaESSOptionsFlowHandler(config_entries.OptionsFlow):
                     mode=selector.SelectSelectorMode.LIST,
                 )
             ),
+            vol.Required(
+                CONF_SINGLE_WRITE_FC16, default=bool(single_write_fc16)
+            ): selector.BooleanSelector(),
         })
 
         return self.async_show_form(step_id="init", data_schema=schema)

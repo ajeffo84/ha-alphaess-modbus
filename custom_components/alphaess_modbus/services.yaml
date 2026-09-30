@@ -1,9 +1,10 @@
 write_register:
   name: Write Register
   description: >
-    Write a raw integer value to a single Modbus holding register on the inverter
-    using FC6 (Write Single Register). No scale or offset is applied. For developers
-    and advanced users only.
+    Write a raw integer value to a single Modbus holding register on the inverter.
+    Uses FC6 (Write Single Register), or FC16 (Write Multiple Registers, quantity 1)
+    when the "single-register writes use FC16" option is on or use_fc16 is set.
+    No scale or offset is applied. For developers and advanced users only.
   fields:
     address:
       name: Address
@@ -29,3 +30,54 @@ write_register:
           min: 0
           max: 65535
           mode: box
+    use_fc16:
+      name: Use FC16
+      description: >
+        Force FC16 (true) or FC6 (false) for this call. Leave unset to follow the
+        integration option.
+      required: false
+      selector:
+        boolean:
+    verify:
+      name: Verify
+      description: >
+        Read the register back after writing and fail if it differs. The read-back
+        value is returned as the action response.
+      required: false
+      default: false
+      selector:
+        boolean:
+write_registers:
+  name: Write Registers
+  description: >
+    Write consecutive raw values starting at a holding register using FC16
+    (Write Multiple Registers). No scale or offset is applied. For developers and
+    advanced users only.
+  fields:
+    address:
+      name: Address
+      description: Start register as a decimal integer (0 to 65535), e.g. 0x0880 = 2176.
+      required: true
+      example: 2048
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+    values:
+      name: Values
+      description: List of raw integers (0 to 65535), 1 to 123 entries.
+      required: true
+      example: "[50]"
+      selector:
+        object:
+    verify:
+      name: Verify
+      description: >
+        Read the span back after writing and fail if it differs. The read-back
+        values are returned as the action response. Do not use on self-clearing
+        registers (e.g. dispatch start at 0x0880 after a timeout, or 0x1100).
+      required: false
+      default: false
+      selector:
+        boolean:

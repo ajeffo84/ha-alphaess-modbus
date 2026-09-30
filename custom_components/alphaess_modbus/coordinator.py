@@ -237,15 +237,37 @@ class AlphaESSCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             DISPATCH_PV_UNCHANGED,    # PV Switch (0x088A): leave unchanged on stop
         ])
 
-    async def async_write_register(self, address: int, value: int) -> None:
-        await self.client.write_register(address, value)
+    async def async_write_register(
+        self, address: int, value: int, *, verify: bool = False
+    ) -> None:
+        readback = await self.client.write_register(address, value, verify=verify)
+        if verify and readback != value:
+            _LOGGER.warning(
+                "Write to %#06x did not stick: wrote %d, read back %s (%s)",
+                address, value, readback,
+                "FC16" if self.client.single_write_fc16 else "FC6",
+            )
 
-    async def async_write_raw(self, address: int, value: int) -> None:
-        _LOGGER.debug("write_raw: address=%#06x value=%d", address, value)
-        await self.client.write_register(address, value)
+    async def async_write_raw(
+        self,
+        address: int,
+        value: int,
+        *,
+        use_fc16: bool | None = None,
+        verify: bool = False,
+    ) -> int | None:
+        _LOGGER.debug(
+            "write_raw: address=%#06x value=%d use_fc16=%s verify=%s",
+            address, value, use_fc16, verify,
+        )
+        return await self.client.write_register(
+            address, value, use_fc16=use_fc16, verify=verify
+        )
 
-    async def async_write_registers(self, address: int, values: list[int]) -> None:
-        await self.client.write_registers(address, values)
+    async def async_write_registers(
+        self, address: int, values: list[int], *, verify: bool = False
+    ) -> list[int] | None:
+        return await self.client.write_registers(address, values, verify=verify)
 
     async def async_sync_datetime(self) -> None:
         import datetime

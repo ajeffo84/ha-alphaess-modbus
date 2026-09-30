@@ -130,7 +130,9 @@ class AlphaESSNumber(RestoreEntity, NumberEntity):
             return
 
         # Direct single-register write
-        await self._coordinator.async_write_register(self._reg.address, int(value))
+        await self._coordinator.async_write_register(
+            self._reg.address, int(value), verify=True
+        )
 
     async def _refire_if_active(self) -> None:
         switch_key = next(
